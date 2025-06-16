@@ -19,15 +19,19 @@ Manus is amazing, but OpenManus can realize any creative idea without an invitat
 
 (Yes, it has full process replay capability, allowing you to share an execution process in an almost lossless way)
 
-https://openmanus.iheytang.com/share/tasks/cm9k3hmiv00ezo8011k4008qx
+1. Network search and automatic note-taking in Flomo through MCP
+   https://openmanus.iheytang.com/share/tasks/cm9k3hmiv00ezo8011k4008qx
+
+2. Text-to-image generation using MiniMax through MCP, further converting the generated images into video
+   https://openmanus.iheytang.com/share/tasks/cmbnaws9y001xqr01e7miwpme
 
 ## Project Features
 
 1. Clean and elegant operation interface - Command line? Not here.
-2. Multi-organization, multi-user support - This is great, each tenant can configure their own APIKey
+2. ~~Multi-organization, multi-user support - This is great, each tenant can configure their own APIKey~~ You can configure multiple LLM APIKeys simultaneously, and you can choose any pre-configured APIKey during conversations!
 3. Background task execution - Ask questions, close the page, come back later to see the results
-4. Quick MCP integration - Fast installation from MCP marketplace, get started with MCP in 1 minute
-5. Task-partitioned workspace - Each task's attachments can be browsed separately
+4. ~~Quick MCP integration - Fast installation from MCP marketplace, get started with MCP in 1 minute~~ Custom MCP tool support - You can add your customized MCP tools to your Agent, and these tools will only serve you!
+5. Workspace sandbox management - Each user has their own independent sandbox with almost a complete Linux environment, it's like assigning a computer to your Agent. Just imagine the potential when your Agent has its own dedicated computer!
 6. Multi-turn conversations - Task not completed well? Keep asking questions
 
 ## Installation Guide
@@ -163,6 +167,13 @@ npm run dev
 ```
 
 After starting, open `http://localhost:3000` to view
+
+## MCP Tool Configuration
+
+When self-deploying, the Tools Market does not have initialized data. Since the interactive page for adding tools to the marketplace is not fully implemented yet, there are two ways to introduce MCP tools:
+
+1. You can use Custom Tool to manually configure MCP tools in the input configuration dialog.
+2. You can refer to `scripts/init_tool_schemas.sql` to directly insert the corresponding data into the database.
 
 ## Acknowledgments
 

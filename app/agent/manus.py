@@ -1,13 +1,12 @@
-import os
 from datetime import datetime
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
 from app.agent.base import BaseAgentEvents
-from app.agent.browser import BrowserContextHelper
 from app.agent.react import ReActAgent
-from app.agent.toolcall import ToolCallContextHelper
+from app.context.browser import BrowserContextHelper
+from app.context.toolcall import ToolCallContextHelper
 from app.logger import logger
 from app.prompt.manus import NEXT_STEP_PROMPT, PLAN_PROMPT, SYSTEM_PROMPT
 from app.schema import Message
@@ -17,8 +16,8 @@ from app.tool.bash import Bash
 from app.tool.browser_use_tool import BrowserUseTool
 from app.tool.create_chat_completion import CreateChatCompletion
 from app.tool.deep_research import DeepResearch
+from app.tool.file_operators import FileOperator
 from app.tool.planning import PlanningTool
-from app.tool.python_execute import PythonExecute
 from app.tool.str_replace_editor import StrReplaceEditor
 from app.tool.web_search import WebSearch
 
@@ -27,10 +26,10 @@ SYSTEM_TOOLS: list[BaseTool] = [
     WebSearch(),
     DeepResearch(),
     BrowserUseTool(),
+    FileOperator(),
     StrReplaceEditor(),
     PlanningTool(),
     CreateChatCompletion(),
-    PythonExecute(),
 ]
 
 SYSTEM_TOOLS_MAP = {tool.name: tool.__class__ for tool in SYSTEM_TOOLS}
@@ -39,9 +38,13 @@ SYSTEM_TOOLS_MAP = {tool.name: tool.__class__ for tool in SYSTEM_TOOLS}
 class McpToolConfig(BaseModel):
     id: str
     name: str
+    # for stdio
     command: str
     args: list[str]
     env: dict[str, str]
+    # for sse
+    url: str
+    headers: dict[str, Any]
 
 
 class Manus(ReActAgent):
@@ -53,13 +56,10 @@ class Manus(ReActAgent):
     )
 
     system_prompt: str = SYSTEM_PROMPT.format(
-        directory="/workspace",
         task_id="Not Specified",
-        task_dir="Not Specified",
         language="English",
-        current_date=datetime.now().strftime("%Y-%m-%d"),
         max_steps=20,
-        current_step=0,
+        current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
     )
     next_step_prompt: str = NEXT_STEP_PROMPT.format(
         max_steps=20,
@@ -110,21 +110,19 @@ class Manus(ReActAgent):
 
     async def prepare(self) -> None:
         """Prepare the agent for execution."""
+        await super().prepare()
+        task_id_without_orgnization_id = self.task_id.split("/")[-1]
         self.system_prompt = SYSTEM_PROMPT.format(
-            directory="/workspace",
-            task_id=self.task_id,
-            task_dir=self.task_dir,
+            task_id=task_id_without_orgnization_id,
             language=self.language or "English",
-            current_date=datetime.now().strftime("%Y-%m-%d"),
             max_steps=self.max_steps,
-            current_step=self.current_step,
+            current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
         )
 
         self.next_step_prompt = NEXT_STEP_PROMPT.format(
             max_steps=self.max_steps,
             current_step=self.current_step,
             remaining_steps=self.max_steps - self.current_step,
-            task_dir=self.task_dir,
         )
 
         await self.update_memory(
@@ -142,15 +140,23 @@ class Manus(ReActAgent):
                     await self.tool_call_context_helper.add_tool(inst)
                     if hasattr(inst, "llm"):
                         inst.llm = self.llm
+                    if hasattr(inst, "sandbox"):
+                        inst.sandbox = self.sandbox
                 elif isinstance(tool, McpToolConfig):
                     await self.tool_call_context_helper.add_mcp(
                         {
                             "client_id": tool.id,
+                            "url": tool.url,
                             "command": tool.command,
                             "args": tool.args,
                             "env": tool.env,
+                            "headers": tool.headers,
                         }
                     )
+        print("--------------------------------")
+        print(
+            f"prepare success, available tools: {', '.join([tool.name for tool in self.tool_call_context_helper.available_tools.tools])}"
+        )
 
     async def plan(self) -> str:
         """Create an initial plan based on the user request."""
@@ -188,7 +194,6 @@ class Manus(ReActAgent):
             max_steps=self.max_steps,
             current_step=self.current_step,
             remaining_steps=self.max_steps - self.current_step,
-            task_dir=self.task_dir,
         )
 
         browser_in_use = self._check_browser_in_use_recently()
@@ -228,6 +233,5 @@ class Manus(ReActAgent):
             await self.browser_context_helper.cleanup_browser()
         if self.tool_call_context_helper:
             await self.tool_call_context_helper.cleanup_tools()
-        if self.tool_call_context_helper.mcp:
-            await self.tool_call_context_helper.mcp.disconnect_all()
+        await super().cleanup()
         logger.info(f"✨ Cleanup complete for agent '{self.name}'.")

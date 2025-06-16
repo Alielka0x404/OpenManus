@@ -37,11 +37,11 @@ export const ChatInput = ({ status = 'idle', onSubmit, onTerminate, taskId }: Ch
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [shareExpiration, setShareExpiration] = useState('60');
   const [isSharing, setIsSharing] = useState(false);
-  const { selectedModel, selectedTools } = useInputConfig();
+  const { enabledModel, enabledTools } = useInputConfig();
 
   const { data: llmConfigs, isLoading: loadingLlmConfigs } = useServerAction(getLlmConfigs, {});
 
-  const currentModel = useMemo(() => llmConfigs?.find(c => c.id === selectedModel), [llmConfigs, selectedModel]);
+  const currentModel = useMemo(() => llmConfigs?.find(c => c.id === enabledModel), [llmConfigs, enabledModel]);
 
   const handleKeyDown = async (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -49,7 +49,7 @@ export const ChatInput = ({ status = 'idle', onSubmit, onTerminate, taskId }: Ch
       if (status === 'thinking' || status === 'terminating' || !value.trim()) {
         return;
       }
-      await onSubmit?.({ modelId: selectedModel, prompt: value.trim(), tools: selectedTools, files, shouldPlan });
+      await onSubmit?.({ modelId: enabledModel, prompt: value.trim(), tools: enabledTools, files, shouldPlan });
       setValue('');
       setFiles([]);
     }
@@ -93,7 +93,7 @@ export const ChatInput = ({ status = 'idle', onSubmit, onTerminate, taskId }: Ch
     }
     const v = value.trim();
     if (v || files.length > 0) {
-      await onSubmit?.({ modelId: selectedModel, prompt: v, tools: selectedTools, files, shouldPlan });
+      await onSubmit?.({ modelId: enabledModel, prompt: v, tools: enabledTools, files, shouldPlan });
       setValue('');
       setFiles([]);
     }
@@ -152,7 +152,7 @@ export const ChatInput = ({ status = 'idle', onSubmit, onTerminate, taskId }: Ch
             </Button>
           </div>
         )}
-        <div className="flex w-full flex-col rounded-2xl bg-white shadow-[0_0_15px_rgba(0,0,0,0.1)]">
+        <div className="bg-background dark:bg-background flex w-full flex-col rounded-2xl shadow-[0_0_15px_rgba(0,0,0,0.1)] dark:border">
           <Textarea
             value={value}
             onChange={e => setValue(e.target.value)}
@@ -167,9 +167,9 @@ export const ChatInput = ({ status = 'idle', onSubmit, onTerminate, taskId }: Ch
                     ? 'Task completed!'
                     : "Let's Imagine the Impossible, Create the Future Together"
             }
-            className="min-h-[80px] flex-1 resize-none border-none bg-transparent px-4 py-3 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
+            className="min-h-[80px] flex-1 resize-none border-none bg-transparent px-4 py-3 shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent"
           />
-          <div className="flex items-center justify-between border-t border-gray-100 px-4 py-2">
+          <div className="border-border flex items-center justify-between border-t px-4 py-2">
             <div className="flex items-center gap-2">
               <Tooltip>
                 <TooltipTrigger>
@@ -189,7 +189,7 @@ export const ChatInput = ({ status = 'idle', onSubmit, onTerminate, taskId }: Ch
               <Badge variant="outline" className="flex cursor-pointer items-center gap-1" onClick={() => toolsConfigDialogRef.current?.open()}>
                 <Wrench className="h-3 w-3" />
                 <span>{currentModel?.name || currentModel?.model || 'Unknown Model'}</span>
-                <span>with Tools {selectedTools.length ? `(${selectedTools.length})` : ''}</span>
+                <span>with Tools {enabledTools.length ? `(${enabledTools.length})` : ''}</span>
               </Badge>
             </div>
             <div className="flex items-center gap-2">
@@ -212,7 +212,7 @@ export const ChatInput = ({ status = 'idle', onSubmit, onTerminate, taskId }: Ch
                 type="button"
                 size="icon"
                 variant="ghost"
-                className="h-8 w-8 cursor-pointer rounded-xl hover:bg-gray-100"
+                className="h-8 w-8 cursor-pointer rounded-xl"
                 disabled={!llmConfigs?.length}
                 onClick={triggerFileSelect}
                 aria-label="Attach files"
@@ -224,7 +224,7 @@ export const ChatInput = ({ status = 'idle', onSubmit, onTerminate, taskId }: Ch
                 type="button"
                 size="icon"
                 variant="ghost"
-                className="h-8 w-8 cursor-pointer rounded-xl hover:bg-gray-100"
+                className="h-8 w-8 cursor-pointer rounded-xl"
                 onClick={handleSendClick}
                 disabled={status !== 'idle' && status !== 'completed' && !(status === 'thinking' || status === 'terminating') && !llmConfigs?.length}
                 aria-label={status === 'thinking' || status === 'terminating' ? 'Terminate task' : 'Send message'}

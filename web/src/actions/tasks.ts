@@ -5,6 +5,7 @@ import { decryptLongTextWithPrivateKey, decryptWithPrivateKey } from '@/lib/cryp
 import { LANGUAGE_CODES } from '@/lib/language';
 import { prisma } from '@/lib/prisma';
 import { to } from '@/lib/to';
+import { mcpServerSchema } from '@/lib/tools';
 import fs from 'fs';
 import path from 'path';
 
@@ -34,6 +35,7 @@ export const pageTasks = withUserAuth(async ({ organization, args }: AuthWrapper
 });
 
 type CreateTaskArgs = {
+  taskId?: string;
   modelId: string;
   prompt: string;
   tools: string[];
@@ -41,7 +43,8 @@ type CreateTaskArgs = {
   shouldPlan: boolean;
 };
 export const createTask = withUserAuth(async ({ organization, args }: AuthWrapperContext<CreateTaskArgs>) => {
-  const { modelId, prompt, tools, files, shouldPlan } = args;
+  const { taskId, modelId, prompt, tools, files, shouldPlan } = args;
+
   const llmConfig = await prisma.llmConfigs.findUnique({ where: { id: modelId, organizationId: organization.id } });
 
   if (!llmConfig) throw new Error('LLM config not found');
@@ -51,38 +54,56 @@ export const createTask = withUserAuth(async ({ organization, args }: AuthWrappe
   });
 
   // Query tool configurations
-  const organizationTools = await prisma.organizationTools.findMany({
-    where: { organizationId: organization.id, tool: { id: { in: tools } } },
-    include: { tool: true },
+  const agentTools = await prisma.agentTools.findMany({
+    where: { organizationId: organization.id, id: { in: tools } },
+    include: { schema: true },
   });
 
   // Build tool list, use configuration if available, otherwise use tool name
   const processedTools = tools.map(tool => {
-    const orgTool = organizationTools.find(ot => ot.tool.id === tool);
-    if (orgTool) {
-      const env = orgTool.env ? JSON.parse(decryptLongTextWithPrivateKey(orgTool.env, privateKey)) : {};
-      return JSON.stringify({
-        id: orgTool.tool.id,
-        name: orgTool.tool.name,
-        command: orgTool.tool.command,
-        args: orgTool.tool.args,
-        env: env,
-      });
+    const agentTool = agentTools.find(at => at.id === tool);
+    if (agentTool) {
+      if (agentTool.source === 'STANDARD' && agentTool.schema) {
+        const env = agentTool.env ? JSON.parse(decryptLongTextWithPrivateKey(agentTool.env, privateKey)) : {};
+        const query = agentTool.query ? JSON.parse(decryptLongTextWithPrivateKey(agentTool.query, privateKey)) : {};
+        const fullUrl = buildMcpSseFullUrl(agentTool.schema.url, query);
+        const headers = agentTool.headers ? JSON.parse(decryptLongTextWithPrivateKey(agentTool.headers, privateKey)) : {};
+
+        return JSON.stringify({
+          id: agentTool.id,
+          name: agentTool.name || agentTool.schema?.name,
+          command: agentTool.schema?.command,
+          args: agentTool.schema?.args,
+          env: env,
+          url: fullUrl,
+          headers: headers,
+        });
+      } else if (agentTool.source === 'CUSTOM') {
+        const customConfig = agentTool.customConfig ? JSON.parse(decryptLongTextWithPrivateKey(agentTool.customConfig, privateKey)) : {};
+        const validationResult = mcpServerSchema.safeParse(customConfig);
+        if (!validationResult.success) {
+          throw new Error(`Invalid config: ${validationResult.error.message}`);
+        }
+        const server = validationResult.data;
+        const fullUrl = buildMcpSseFullUrl(server.url || '', server.query || {});
+        return JSON.stringify({
+          id: agentTool.id,
+          name: agentTool.name,
+          command: server.command || '',
+          args: server.args || [],
+          env: server.env || {},
+          url: fullUrl,
+          headers: server.headers || {},
+        });
+      }
     }
     return tool;
   });
 
-  // Create task
-  const task = await prisma.tasks.create({
-    data: {
-      prompt,
-      status: 'pending',
-      llmId: llmConfig.id,
-      organizationId: organization.id,
-      tools,
-    },
-  });
+  // Create task or restart task
+  const { task, history } = await createOrFetchTask(organization.id, { taskId, prompt, llmId: modelId, tools: processedTools });
 
+  // Send task to API
   const formData = new FormData();
   formData.append('task_id', `${organization.id}/${task.id}`);
   formData.append('prompt', prompt);
@@ -102,6 +123,7 @@ export const createTask = withUserAuth(async ({ organization, args }: AuthWrappe
       api_version: llmConfig.apiVersion || '',
     }),
   );
+  formData.append('history', JSON.stringify(history));
   files.forEach(file => formData.append('files', file, file.name));
 
   const [error, response] = await to(
@@ -130,113 +152,6 @@ export const createTask = withUserAuth(async ({ organization, args }: AuthWrappe
 
   return { id: task.id, outId: response.task_id };
 });
-
-export const restartTask = withUserAuth(
-  async ({
-    organization,
-    args,
-  }: AuthWrapperContext<{ taskId: string; modelId: string; prompt: string; tools: string[]; files: File[]; shouldPlan: boolean }>) => {
-    const { taskId, modelId, prompt, tools, files, shouldPlan } = args;
-
-    const llmConfig = await prisma.llmConfigs.findUnique({ where: { id: modelId, organizationId: organization.id } });
-
-    if (!llmConfig) throw new Error('LLM config not found');
-
-    const preferences = await prisma.preferences.findUnique({
-      where: { organizationId: organization.id },
-    });
-
-    // Query tool configurations
-    const organizationTools = await prisma.organizationTools.findMany({
-      where: { organizationId: organization.id, tool: { id: { in: tools } } },
-      include: { tool: true },
-    });
-
-    // Build tool list, use configuration if available, otherwise use tool name
-    const processedTools = tools.map(tool => {
-      const orgTool = organizationTools.find(ot => ot.tool.id === tool);
-      if (orgTool) {
-        const env = orgTool.env ? JSON.parse(decryptLongTextWithPrivateKey(orgTool.env, privateKey)) : {};
-        return JSON.stringify({
-          id: orgTool.tool.id,
-          name: orgTool.tool.name,
-          command: orgTool.tool.command,
-          args: orgTool.tool.args,
-          env: env,
-        });
-      }
-      return tool;
-    });
-
-    const task = await prisma.tasks.findUnique({ where: { id: taskId, organizationId: organization.id } });
-    if (!task) throw new Error('Task not found');
-    if (task.status !== 'completed' && task.status !== 'terminated' && task.status !== 'failed') throw new Error('Task is processing');
-
-    const progresses = await prisma.taskProgresses.findMany({
-      where: { taskId: task.id, type: { in: ['agent:lifecycle:start', 'agent:lifecycle:complete'] } },
-      select: { type: true, content: true },
-      orderBy: { index: 'asc' },
-    });
-
-    const history = progresses.reduce(
-      (acc, progress) => {
-        if (progress.type === 'agent:lifecycle:start') {
-          acc.push({ role: 'user', message: (progress.content as { request: string }).request });
-        } else if (progress.type === 'agent:lifecycle:complete') {
-          const latestUserProgress = acc.findLast(item => item.role === 'user');
-          if (latestUserProgress) {
-            acc.push({ role: 'assistant', message: (progress.content as { results: string[] }).results.join('\n') });
-          }
-        }
-        return acc;
-      },
-      [] as { role: string; message: string }[],
-    );
-
-    // Send task to API
-    const formData = new FormData();
-    formData.append('task_id', `${organization.id}/${task.id}`);
-    formData.append('prompt', prompt);
-    formData.append('should_plan', shouldPlan.toString());
-    processedTools.forEach(tool => formData.append('tools', tool));
-    formData.append('preferences', JSON.stringify({ language: LANGUAGE_CODES[preferences?.language as keyof typeof LANGUAGE_CODES] }));
-    formData.append(
-      'llm_config',
-      JSON.stringify({
-        model: llmConfig.model,
-        base_url: llmConfig.baseUrl,
-        api_key: decryptWithPrivateKey(llmConfig.apiKey, privateKey),
-        max_tokens: llmConfig.maxTokens,
-        max_input_tokens: llmConfig.maxInputTokens,
-        temperature: llmConfig.temperature,
-        api_type: llmConfig.apiType || '',
-        api_version: llmConfig.apiVersion || '',
-      }),
-    );
-    formData.append('history', JSON.stringify(history));
-    files.forEach(file => formData.append('files', file));
-
-    const [error, response] = await to(
-      fetch(`${MANUS_URL}/tasks/restart`, {
-        method: 'POST',
-        body: formData,
-      }).then(res => res.json() as Promise<{ task_id: string }>),
-    );
-
-    if (error || !response.task_id) {
-      throw new Error('Failed to restart task');
-    }
-
-    await prisma.tasks.update({ where: { id: task.id }, data: { outId: response.task_id, status: 'processing' } });
-
-    // Handle event stream in background
-    handleTaskEvents(task.id, response.task_id, organization.id).catch(error => {
-      console.error('Failed to handle task events:', error);
-    });
-
-    return { id: task.id, outId: response.task_id };
-  },
-);
 
 export const terminateTask = withUserAuth(async ({ organization, args }: AuthWrapperContext<{ taskId: string }>) => {
   const { taskId } = args;
@@ -347,3 +262,67 @@ async function handleTaskEvents(taskId: string, outId: string, organizationId: s
     reader.releaseLock();
   }
 }
+
+async function createOrFetchTask(organizationId: string, config: { taskId: string } | { prompt: string; llmId: string; tools: string[] }) {
+  if (!('taskId' in config) || !config.taskId) {
+    const { prompt, llmId, tools } = config as { prompt: string; llmId: string; tools: string[] };
+    const task = await prisma.tasks.create({
+      data: {
+        prompt,
+        status: 'pending',
+        llmId,
+        organizationId,
+        tools,
+      },
+    });
+    return { task, history: [] };
+  }
+
+  const task = await prisma.tasks.findUnique({ where: { id: config.taskId, organizationId } });
+  if (!task) throw new Error('Task not found');
+  if (task.status !== 'completed' && task.status !== 'terminated' && task.status !== 'failed') throw new Error('Task is processing');
+
+  const progresses = await prisma.taskProgresses.findMany({
+    where: { taskId: task.id, type: { in: ['agent:lifecycle:start', 'agent:lifecycle:complete'] } },
+    select: { type: true, content: true },
+    orderBy: { index: 'asc' },
+  });
+
+  const history = progresses.reduce(
+    (acc, progress) => {
+      if (progress.type === 'agent:lifecycle:start') {
+        acc.push({ role: 'user', message: (progress.content as { request: string }).request });
+      } else if (progress.type === 'agent:lifecycle:complete') {
+        const latestUserProgress = acc.findLast(item => item.role === 'user');
+        if (latestUserProgress) {
+          acc.push({ role: 'assistant', message: (progress.content as { results: string[] }).results.join('\n') });
+        }
+      }
+      return acc;
+    },
+    [] as { role: string; message: string }[],
+  );
+
+  return { task, history };
+}
+
+/**
+ * Build full url for MCP SSE
+ *
+ * url is stored in the config of the tool schema
+ * query is stored in the tool
+ * so we need to build the full url with query parameters
+ *
+ * @param url - The base URL
+ * @param query - The query parameters
+ * @returns The full URL with query parameters
+ */
+const buildMcpSseFullUrl = (url: string, query: Record<string, string>) => {
+  if (!url) return '';
+  let fullUrl = url;
+  if (Object.keys(query).length > 0) {
+    const queryParams = new URLSearchParams(query);
+    fullUrl = `${fullUrl}${fullUrl.includes('?') ? '&' : '?'}${queryParams.toString()}`;
+  }
+  return fullUrl;
+};

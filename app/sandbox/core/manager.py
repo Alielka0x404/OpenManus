@@ -8,6 +8,7 @@ from docker.errors import APIError, ImageNotFound
 
 from app.config import SandboxSettings
 from app.logger import logger
+from app.sandbox.core.exceptions import SandboxNotFoundError
 from app.sandbox.core.sandbox import DockerSandbox
 
 
@@ -59,9 +60,6 @@ class SandboxManager:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._is_shutting_down = False
 
-        # Start automatic cleanup
-        self.start_cleanup_task()
-
     async def ensure_image(self, image: str) -> bool:
         """Ensures Docker image is available.
 
@@ -102,7 +100,7 @@ class SandboxManager:
 
         async with self._locks[sandbox_id]:
             if sandbox_id not in self._sandboxes:
-                raise KeyError(f"Sandbox {sandbox_id} not found")
+                raise SandboxNotFoundError(f"Sandbox {sandbox_id} not found")
 
             self._active_operations.add(sandbox_id)
             try:
@@ -113,8 +111,10 @@ class SandboxManager:
 
     async def create_sandbox(
         self,
+        sandbox_id: Optional[str] = None,
         config: Optional[SandboxSettings] = None,
         volume_bindings: Optional[Dict[str, str]] = None,
+        environment: Optional[Dict[str, str]] = None,
     ) -> str:
         """Creates a new sandbox instance.
 
@@ -138,9 +138,11 @@ class SandboxManager:
             if not await self.ensure_image(config.image):
                 raise RuntimeError(f"Failed to ensure Docker image: {config.image}")
 
-            sandbox_id = str(uuid.uuid4())
+            sandbox_id = sandbox_id or str(uuid.uuid4())
             try:
-                sandbox = DockerSandbox(config, volume_bindings)
+                sandbox = DockerSandbox(
+                    sandbox_id, config, volume_bindings, environment
+                )
                 await sandbox.create()
 
                 self._sandboxes[sandbox_id] = sandbox
